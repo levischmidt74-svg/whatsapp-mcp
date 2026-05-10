@@ -1,0 +1,13 @@
+**/.git
+**/.github
+**/.venv
+**/__pycache__
+**/*.pyc
+**/whatsapp-bridge/store/
+**/whatsapp_qr.png
+**/.env
+**/.env.local
+**/node_modules
+deploy/fly/README.md
+docs/
+example-use.png

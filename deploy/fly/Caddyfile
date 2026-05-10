@@ -1,0 +1,40 @@
+# Pure pass-through reverse proxy. All auth is enforced in the Python app
+# (OAuth 2.1 + PKCE for /mcp; static bearer accepted as an admin backdoor).
+#
+# Layout:
+#   public  :8000  (Fly internal_port, terminated as TLS by Fly's edge)
+#   private 127.0.0.1:3000  Starlette app: OAuth endpoints + FastMCP /mcp
+#   private 127.0.0.1:8080  WhatsApp bridge REST  <-- never proxied
+#
+# The bridge has no auth, which is why nothing here forwards to it.
+
+{
+	auto_https off
+	admin off
+}
+
+:8000 {
+	log {
+		output stdout
+		format console
+		level  INFO
+	}
+
+	@health path /health
+	handle @health {
+		respond "ok" 200
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000 {
+			# uvicorn rejects requests whose Host header doesn't match
+			# its bind address (returns 421). Rewrite to upstream.
+			header_up Host {upstream_hostport}
+			flush_interval -1
+			transport http {
+				read_buffer  64KB
+				write_buffer 64KB
+			}
+		}
+	}
+}
