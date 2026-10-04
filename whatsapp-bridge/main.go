@@ -1390,6 +1390,48 @@ func extractDirectPathFromURL(url string) string {
 	return "/" + pathPart
 }
 
+// pairQRPath is where the bridge drops the current pairing code so the remote
+// /qr page can render it. Relative to the process cwd, same as the SQLite
+// stores (on Fly, start.sh runs the bridge from /data, so this resolves to
+// /data/store/pair_qr.txt on the shared volume).
+//
+// The REST server below only starts *after* pairing succeeds, so an HTTP
+// endpoint on this process cannot serve the code while it is on screen. The
+// file is the handoff instead.
+const pairQRPath = "store/pair_qr.txt"
+
+// writePairQR persists the latest pairing code with a unix timestamp so the
+// page can tell a live code from a leftover one. Best-effort by design:
+// pairing must never fail because this file cannot be written.
+func writePairQR(code string, logger waLog.Logger) {
+	payload := fmt.Sprintf("%d\n%s\n", time.Now().Unix(), code)
+	if err := os.WriteFile(pairQRPath, []byte(payload), 0o600); err != nil {
+		logger.Warnf("could not write %s: %v", pairQRPath, err)
+	}
+}
+
+// pairLoggedOutPath marks a session that WhatsApp has rejected. Without it
+// the /qr page cannot tell a working session from a dead one: both leave a
+// row in whatsmeow_device, and the bridge never emits a QR for either (it
+// only pairs when Store.ID is nil), so a logged-out machine would show as
+// linked forever.
+const pairLoggedOutPath = "store/pair_logged_out"
+
+func markLoggedOut(logger waLog.Logger) {
+	if err := os.WriteFile(pairLoggedOutPath, []byte("logged out\n"), 0o600); err != nil {
+		logger.Warnf("could not write %s: %v", pairLoggedOutPath, err)
+	}
+}
+
+func clearLoggedOut() {
+	_ = os.Remove(pairLoggedOutPath)
+}
+
+// clearPairQR removes the handoff file once the code is spent.
+func clearPairQR() {
+	_ = os.Remove(pairQRPath)
+}
+
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
 	// Health check endpoint
@@ -1758,9 +1800,11 @@ func main() {
 			}
 
 		case *events.Connected:
+			clearLoggedOut()
 			logger.Infof("✓ Successfully connected to WhatsApp servers")
 
 		case *events.LoggedOut:
+			markLoggedOut(logger)
 			logger.Warnf("⚠️  Device logged out, please scan QR code to log in again")
 
 		case *events.Disconnected:
@@ -1847,6 +1891,10 @@ func main() {
 			qrCodeShown := false
 			for evt := range qrChan {
 				if evt.Event == "code" {
+					// Every rollover, not just the first: the ASCII QR below is
+					// drawn once, but the /qr page should always hold the code
+					// that is currently valid.
+					writePairQR(evt.Code, logger)
 					if !qrCodeShown {
 						fmt.Println("\nScan this QR code with your WhatsApp app:")
 						qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
@@ -1854,9 +1902,11 @@ func main() {
 						qrCodeShown = true
 					}
 				} else if evt.Event == "success" {
+					clearPairQR()
 					connected <- true
 					break
 				} else if evt.Event == "timeout" {
+					clearPairQR()
 					logger.Warnf("QR code timed out")
 					break
 				}

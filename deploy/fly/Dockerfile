@@ -45,11 +45,14 @@ RUN uv sync --frozen --no-dev
 # POST (application/x-www-form-urlencoded actually doesn't strictly require
 # it, but multipart fallback paths do — install once to be safe).
 RUN uv pip install --no-cache python-multipart
+# segno renders the pairing QR for the /qr page (pure python, no PIL).
+RUN uv pip install --no-cache segno
 COPY whatsapp-mcp-server/ ./
 
 COPY deploy/fly/mcp_http.py     /app/mcp-server/mcp_http.py
 COPY deploy/fly/oauth.py        /app/mcp-server/oauth.py
 COPY deploy/fly/oauth_routes.py /app/mcp-server/oauth_routes.py
+COPY deploy/fly/qr_page.py     /app/mcp-server/qr_page.py
 COPY deploy/fly/Caddyfile       /app/Caddyfile
 COPY deploy/fly/start.sh        /app/start.sh
 RUN chmod +x /app/start.sh

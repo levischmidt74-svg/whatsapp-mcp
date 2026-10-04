@@ -7,6 +7,7 @@ Layout of the Starlette app served on 127.0.0.1:$MCP_PORT (Caddy fronts it):
     /oauth/authorize/consent    consent form POST
     /oauth/token                code -> access_token
     /mcp                        FastMCP streamable-http (auth-gated)
+    /qr, /qr.svg, /qr/*         browser pairing page (admin bearer)
 
 The bearer middleware accepts two kinds of tokens for /mcp:
     1. OAuth-issued access tokens stored in oauth_access_tokens
@@ -32,6 +33,7 @@ from starlette.routing import Mount
 from main import mcp
 from oauth import init_db, validate_token
 from oauth_routes import routes as oauth_routes
+from qr_page import routes as qr_routes
 
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
 STATIC_TOKEN = os.getenv("MCP_BEARER_TOKEN", "")
@@ -82,6 +84,9 @@ def build_app() -> Starlette:
     app = Starlette(
         routes=[
             *oauth_routes,
+            # Both must precede the catch-all Mount below, which would
+            # otherwise swallow these paths into the FastMCP app.
+            *qr_routes,
             Mount("/", app=mcp_asgi),
         ],
         middleware=[Middleware(BearerAuthMiddleware)],

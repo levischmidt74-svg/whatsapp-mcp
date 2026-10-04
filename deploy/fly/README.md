@@ -56,6 +56,78 @@ on subsequent restarts.
 If the QR rolls over before you scan it, restart the machine:
 `flyctl machine restart -a lawnsmith-whatsapp`.
 
+## Pairing from a browser (no flyctl needed)
+
+Reading the QR out of `flyctl logs` is painful: the bridge draws it with
+`qrterminal.GenerateHalfBlock`, and log pipelines mangle half-block glyphs.
+So the bridge also writes every code it emits to `/data/store/pair_qr.txt`
+(`writePairQR` in `main.go`) and the Python app re-encodes it as an SVG:
+
+    https://lawnsmith-whatsapp.fly.dev/qr?token=$MCP_BEARER_TOKEN
+
+Open that on your laptop, scan with your phone, done. The page polls every
+3s, so it picks up each ~20s rollover on its own and switches to "Already
+linked" once the handshake lands. Routes (all admin-bearer gated, as a
+header or `?token=` so the link is clickable):
+
+| Route | Purpose |
+| --- | --- |
+| `GET /qr` | the page |
+| `GET /qr.svg` | current code as an SVG QR |
+| `GET /qr/state` | `{state, code_id, jid, age}` for the poller |
+| `POST /qr/relink` | wipe the session and bounce the machine |
+
+A code older than 90s is treated as a leftover from a dead attempt and shown
+as "no live code", so a stale file can't hand you an unscannable QR.
+
+`state` is one of:
+
+| state | meaning |
+| --- | --- |
+| `code` | a live code is on screen, scan it |
+| `linked` | paired and connected, nothing to do |
+| `logged_out` | a session exists but WhatsApp rejected it - press Re-link |
+| `waiting` | no code yet (booting, or between attempts) |
+
+`logged_out` exists because a rejected session is indistinguishable from a
+healthy one by the database alone: both leave a row in `whatsmeow_device`,
+and the bridge emits no QR for either. So `main.go` drops a
+`store/pair_logged_out` marker on the `LoggedOut` event and removes it on
+`Connected`. Without it the page would cheerfully report a dead machine as
+"Already linked".
+
+### Typical first run after the machine has been logged out
+
+1. `flyctl deploy ...` once, to ship this page (needed only this one time).
+2. Open `/qr?token=...` - it will say **Session rejected**.
+3. Press **Re-link this device**, confirm.
+4. Wait ~30s; the QR appears on its own. Scan it.
+5. The page flips to **Already linked**. No flyctl, no SSH, no log scraping.
+
+### Why there's a Re-link button
+
+The bridge only enters the QR flow when `client.Store.ID == nil`. A session
+that exists but is logged out takes the "already logged in" branch instead:
+it connects, gets a `LoggedOut` event, warns, and loops — **no QR, ever**.
+Clearing `whatsapp.db` is what forces a fresh pair.
+
+`POST /qr/relink` does that over HTTP so you don't need `flyctl ssh console`:
+it unlinks `whatsapp.db{,-wal,-shm}` and `pair_qr.txt`, then exits the
+process. `start.sh`'s `wait -n` sees the dead child, tears down its
+siblings, and Fly restarts the machine — which boots with no session, enters
+the QR flow, and writes a fresh code for the page to pick up. Takes 20-40s.
+`messages.db` is untouched, so stored history survives.
+
+It is destructive and irreversible (you must re-scan), hence the confirm
+dialog and the token.
+
+### QR leak risk
+
+Scanning links *this bridge* to *the scanning phone's* account, not the
+reverse — a leaked code does not expose your message history. The real risk
+is someone linking the bridge to their own account and quietly feeding their
+messages into your MCP, which is why the page is token-gated like `/mcp`.
+
 ## Connecting Claude
 
 In the Claude mobile (or desktop) app, add a custom remote MCP connector:
