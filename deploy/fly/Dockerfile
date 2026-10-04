@@ -7,7 +7,7 @@
 # Build on Debian (glibc), matches the python:3.12-slim runtime ABI.
 # Alpine/musl produced a binary that fails with "cannot execute: required
 # file not found" when copied into the slim image.
-FROM golang:1.24-bookworm AS bridge-build
+FROM golang:1.26-bookworm AS bridge-build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential libsqlite3-dev \
     && rm -rf /var/lib/apt/lists/*
