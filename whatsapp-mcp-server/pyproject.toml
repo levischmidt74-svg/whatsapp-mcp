@@ -20,6 +20,12 @@ dependencies = [
     "mcp[cli]>=1.27.0",
     "requests>=2.33.1",
     "anyio<4.14",
+    # Both are needed by the Fly deployment (deploy/fly). They must be locked
+    # rather than `uv pip install`ed in the Dockerfile: start.sh launches with
+    # `uv run --frozen`, which rebuilds .venv from uv.lock at boot and drops
+    # anything installed outside it.
+    "segno>=1.6.1",
+    "python-multipart>=0.0.20",
 ]
 
 [project.optional-dependencies]
