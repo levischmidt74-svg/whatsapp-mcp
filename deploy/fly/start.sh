@@ -11,7 +11,11 @@ fi
 mkdir -p /data/store
 
 echo "[start.sh] launching whatsapp-bridge on 127.0.0.1:${WHATSAPP_BRIDGE_PORT}"
-( cd /data && exec /app/bridge/whatsapp-bridge ) &
+# --full-history-pair asks WhatsApp for the full backlog (3650 days) at pair
+# time. It is a no-op for an existing session -- only a fresh pair (one with
+# whatsapp.db absent) negotiates history -- so it is safe to leave on across
+# restarts, and it applies to every future re-pair.
+( cd /data && exec /app/bridge/whatsapp-bridge --full-history-pair ) &
 BRIDGE_PID=$!
 
 echo "[start.sh] launching mcp http server on 127.0.0.1:${MCP_PORT}"
