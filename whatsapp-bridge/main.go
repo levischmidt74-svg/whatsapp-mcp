@@ -62,6 +62,20 @@ func getEnvBool(key string, def bool) bool {
 	}
 }
 
+// getEnvInt reads an integer env var with a default. Values that are not a
+// non-negative integer fall back to the default rather than failing a boot.
+func getEnvInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return def
+	}
+	return n
+}
+
 // Message represents a chat message for our client
 type Message struct {
 	Time      time.Time
@@ -1256,6 +1270,106 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 }
 
 // Function to download media from a message
+// mediaPaths builds the on-disk location of a media message. downloadMedia
+// and the audio backfill both need it and must agree exactly, so the rule
+// lives in one place: store/<chat jid>/<type>_<timestamp>_<message id><ext>.
+// audioBackfillMarker records that the one-shot voice-message backfill has
+// run, so it does not repeat on every boot. Delete it to run again.
+const audioBackfillMarker = "store/audio_backfill_done"
+
+// backfillAudio downloads voice messages that have no local file yet.
+//
+// Only live messages get downloaded as they arrive (see handleMessage);
+// anything that came in through a history sync has keys in the database but
+// no file on disk. This closes that gap.
+//
+// WhatsApp drops media from its CDN after roughly a month, so most older
+// messages will fail however valid the stored keys are. Newest first, so the
+// byte budget is spent on what can still be fetched. Runs once (marker file)
+// and stops at AUDIO_BACKFILL_MAX_MB so it cannot fill the volume.
+func backfillAudio(client *whatsmeow.Client, messageStore *MessageStore, logger waLog.Logger) {
+	if _, err := os.Stat(audioBackfillMarker); err == nil {
+		logger.Infof("audio backfill: already run (%s exists), skipping", audioBackfillMarker)
+		return
+	}
+
+	budgetMB := getEnvInt("AUDIO_BACKFILL_MAX_MB", 300)
+	budget := int64(budgetMB) * 1024 * 1024
+
+	rows, err := messageStore.db.Query(
+		`SELECT id, chat_jid, timestamp, file_length FROM messages
+		 WHERE media_type = 'audio' AND length(url) > 0 AND length(media_key) > 0
+		 ORDER BY timestamp DESC`)
+	if err != nil {
+		logger.Errorf("audio backfill: query failed: %v", err)
+		return
+	}
+	type target struct {
+		id, chatJID string
+		ts          time.Time
+		size        int64
+	}
+	var targets []target
+	for rows.Next() {
+		var t target
+		if err := rows.Scan(&t.id, &t.chatJID, &t.ts, &t.size); err != nil {
+			logger.Warnf("audio backfill: skipping unreadable row: %v", err)
+			continue
+		}
+		targets = append(targets, t)
+	}
+	_ = rows.Close()
+
+	logger.Infof("audio backfill: %d voice messages to consider, budget %d MB", len(targets), budgetMB)
+
+	var have, fetched, unavailable int
+	var bytes int64
+	for _, t := range targets {
+		_, _, localPath := mediaPaths("audio", t.chatJID, t.id, t.ts)
+		if _, err := os.Stat(localPath); err == nil {
+			have++
+			continue
+		}
+		if bytes+t.size > budget {
+			logger.Warnf("audio backfill: hit the %d MB budget, stopping early", budgetMB)
+			break
+		}
+		success, _, _, _, err := downloadMedia(client, messageStore, t.id, t.chatJID)
+		if success && err == nil {
+			fetched++
+			bytes += t.size
+		} else {
+			// Expected for anything old: the blob is gone from WhatsApp's CDN.
+			unavailable++
+		}
+		// Be gentle with WhatsApp's media endpoints.
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	logger.Infof("audio backfill done: %d already on disk, %d downloaded (%.1f MB), %d unavailable, %d total",
+		have, fetched, float64(bytes)/(1024*1024), unavailable, len(targets))
+
+	if err := os.WriteFile(audioBackfillMarker, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o600); err != nil {
+		logger.Warnf("audio backfill: could not write %s: %v", audioBackfillMarker, err)
+	}
+}
+
+func mediaPaths(mediaType, chatJID, messageID string, timestamp time.Time) (filename, chatDir, localPath string) {
+	var ext string
+	switch mediaType {
+	case "image":
+		ext = ".jpg"
+	case "video":
+		ext = ".mp4"
+	case "audio":
+		ext = ".ogg"
+	}
+	filename = fmt.Sprintf("%s_%s_%s%s", mediaType, timestamp.Format("20060102_150405"), messageID, ext)
+	chatDir = fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	localPath = fmt.Sprintf("%s/%s", chatDir, filename)
+	return filename, chatDir, localPath
+}
+
 func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
 	// Query the database for the message including timestamp
 	var mediaType, url string
@@ -1281,31 +1395,12 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	// Rebuild filename from (timestamp, messageID) — must match extractMediaInfo.
 	// The message ID disambiguates two messages that arrive in the same second.
-	var ext string
-	switch mediaType {
-	case "image":
-		ext = ".jpg"
-	case "video":
-		ext = ".mp4"
-	case "audio":
-		ext = ".ogg"
-	case "document":
-		ext = ""
-	default:
-		ext = ""
-	}
-	filename := fmt.Sprintf("%s_%s_%s%s", mediaType, timestamp.Format("20060102_150405"), messageID, ext)
-
-	// First, check if we already have this file
-	chatDir := fmt.Sprintf("store/%s", strings.ReplaceAll(chatJID, ":", "_"))
+	filename, chatDir, localPath := mediaPaths(mediaType, chatJID, messageID, timestamp)
 
 	// Create directory for the chat if it doesn't exist
 	if err := os.MkdirAll(chatDir, 0755); err != nil {
 		return false, "", "", "", fmt.Errorf("failed to create chat directory: %v", err)
 	}
-
-	// Generate a local path for the file
-	localPath := fmt.Sprintf("%s/%s", chatDir, filename)
 
 	// Get absolute path
 	absPath, err := filepath.Abs(localPath)
@@ -1972,6 +2067,12 @@ connectionSuccess:
 		port = v
 	}
 	startRESTServer(client, messageStore, port)
+
+	// One-shot: pull voice messages that arrived via history sync, which
+	// never passed through the live download path.
+	if getEnvBool("AUDIO_BACKFILL_ON_START", false) {
+		go backfillAudio(client, messageStore, logger)
+	}
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)

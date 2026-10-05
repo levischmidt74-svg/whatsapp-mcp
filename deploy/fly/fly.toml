@@ -25,6 +25,14 @@ primary_region = "dfw"
   PUBLIC_PORT         = "8000"
   PUBLIC_BASE_URL     = "https://lawnsmith-whatsapp.fly.dev"
 
+  # One-shot backfill of voice messages that arrived through a history sync
+  # and so never passed the live download path. Runs once (it drops a marker
+  # in /data/store) and stops at the MB budget so it cannot fill the volume.
+  # Most old media is already gone from WhatsApp's CDN and will fail; that
+  # is expected, not an error.
+  AUDIO_BACKFILL_ON_START = "true"
+  AUDIO_BACKFILL_MAX_MB   = "300"
+
 # Secret (set with: fly secrets set MCP_BEARER_TOKEN=... -a lawnsmith-whatsapp)
 #   MCP_BEARER_TOKEN — required. Two roles:
 #     1. Consent-screen shared secret. Anyone who knows it can authorize a
