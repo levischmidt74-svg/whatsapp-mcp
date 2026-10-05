@@ -1427,6 +1427,16 @@ func clearLoggedOut() {
 	_ = os.Remove(pairLoggedOutPath)
 }
 
+// retryDelay backs off between connection attempts: 5s, 10s, 20s, 40s, then
+// a 60s ceiling. The connect loop runs forever now, so it must not spin hot
+// while WhatsApp or the network is down.
+func retryDelay(attempt int) time.Duration {
+	if attempt > 4 {
+		return 60 * time.Second
+	}
+	return time.Duration(5<<uint(attempt-1)) * time.Second
+}
+
 // clearPairQR removes the handoff file once the code is spent.
 func clearPairQR() {
 	_ = os.Remove(pairQRPath)
@@ -1854,36 +1864,39 @@ func main() {
 	// Create channel to track connection success
 	connected := make(chan bool, 1)
 
-	// Add connection retry logic
-	maxRetries := 3
+	// Add connection retry logic.
+	//
+	// This loop never gives up. It used to stop after three attempts and
+	// return, which ended main; start.sh then tore down its siblings and the
+	// machine stopped. So an unscanned QR code took the whole app offline --
+	// including the /qr page you would use to pair it. Retrying forever keeps
+	// the machine serving and a fresh code available whenever someone opens
+	// that page.
 	var connErr error
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		logger.Infof("Connection attempt %d/%d...", attempt, maxRetries)
+	for attempt := 1; ; attempt++ {
+		logger.Infof("Connection attempt %d...", attempt)
 
 		// Connect to WhatsApp
 		if client.Store.ID == nil {
-			// No ID stored, this is a new client, need to pair with phone
+			// No ID stored, this is a new client, need to pair with phone.
+			// cancel() runs on every path out of this iteration rather than
+			// deferred: defers only fire when main returns, and this loop no
+			// longer ends.
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
 
-			qrChan, connErr := client.GetQRChannel(ctx)
-			if connErr != nil {
-				logger.Errorf("Failed to get QR channel: %v", connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
+			qrChan, qrErr := client.GetQRChannel(ctx)
+			if qrErr != nil {
+				cancel()
+				logger.Errorf("Failed to get QR channel: %v", qrErr)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 
-			connErr = client.Connect()
-			if connErr != nil {
+			if connErr = client.Connect(); connErr != nil {
+				cancel()
 				logger.Errorf("Failed to connect (attempt %d): %v", attempt, connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 
@@ -1911,30 +1924,24 @@ func main() {
 					break
 				}
 			}
-
 			// Wait for connection with timeout
 			select {
 			case <-connected:
+				cancel()
 				fmt.Println("\nSuccessfully connected and authenticated!")
 				goto connectionSuccess
 			case <-ctx.Done():
-				logger.Errorf("Timeout waiting for QR code scan (attempt %d)", attempt)
+				cancel()
+				logger.Warnf("Nobody scanned the QR code (attempt %d); offering a new one", attempt)
 				client.Disconnect()
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(10 * time.Second)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 		} else {
 			// Already logged in, just connect
-			connErr = client.Connect()
-			if connErr != nil {
+			if connErr = client.Connect(); connErr != nil {
 				logger.Errorf("Failed to connect (attempt %d): %v", attempt, connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 			connected <- true
