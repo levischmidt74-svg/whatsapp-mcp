@@ -23,6 +23,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+transcribe = [
+    "faster-whisper>=1.2.0",
+    # PyAV 19 dropped the metadata_errors argument faster-whisper's decoder passes.
+    "av<19",
+]
 dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
@@ -35,7 +40,7 @@ Repository = "https://github.com/verygoodplugins/whatsapp-mcp"
 Issues = "https://github.com/verygoodplugins/whatsapp-mcp/issues"
 
 [tool.setuptools]
-py-modules = ["main", "whatsapp", "audio"]
+py-modules = ["main", "whatsapp", "audio", "transcribe"]
 
 [tool.mcp]
 name = "io.github.verygoodplugins/whatsapp-mcp"

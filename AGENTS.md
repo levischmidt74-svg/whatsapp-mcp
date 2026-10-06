@@ -24,7 +24,8 @@ whatsapp-mcp/
 ├── whatsapp-mcp-server/    # Python MCP server — exposes tools to AI clients
 │   ├── main.py             # FastMCP tool definitions
 │   ├── whatsapp.py         # DB queries + bridge HTTP client
-│   └── audio.py            # FFmpeg helpers
+│   ├── audio.py            # FFmpeg helpers
+│   └── transcribe.py       # Optional local voice-message transcription (faster-whisper)
 └── .github/                # CI, release, security workflows
 ```
 
@@ -102,6 +103,9 @@ A failing blocking job is a hard block — fix it or explain in the PR why it's 
 | `WHATSAPP_BRIDGE_PORT` | `8080` | Port the bridge binds to |
 | `WEBHOOK_URL` | `http://localhost:8769/whatsapp/webhook` | Outgoing webhook for incoming messages (empty = disabled) |
 | `FORWARD_SELF` | `false` | Whether self-sent messages are forwarded |
+| `WHATSAPP_TRANSCRIBE_MODEL` | `base` | Whisper model used by `transcribe_voice_message` |
+| `WHATSAPP_TRANSCRIBE_DEVICE` | `auto` | Device for transcription (`cpu`, `cuda`, `auto`) |
+| `WHATSAPP_TRANSCRIBE_COMPUTE_TYPE` | `int8` | CTranslate2 compute type for transcription |
 
 When adding a new env var: document it here, in `README.md`, and in `.env.example`.
 
@@ -113,6 +117,8 @@ When adding a new env var: document it here, in `README.md`, and in `.env.exampl
 4. **History sync** is controlled by the *primary* device (the phone). The bridge can request more (see the `--full-history-pair` flag), but the phone has the final word.
 5. **`messages.db` is the source of truth for the MCP server.** Don't make the MCP server dependent on the bridge being up for *read* operations.
 6. **Outgoing calls are not visible to linked devices.** Don't promise features that depend on them.
+7. **Never `print()` in the MCP server.** The stdio transport owns stdout; stray lines corrupt the JSON-RPC stream. Use `logging` (stderr).
+8. **Media downloads prefer `messages.direct_path`.** CDN URLs expire and voice notes often carry only a `web.whatsapp.net` placeholder URL.
 
 ## Where to make changes
 

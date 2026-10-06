@@ -115,6 +115,9 @@ func newTestMessageStore(t *testing.T) *MessageStore {
 	if err != nil {
 		t.Fatalf("failed to create tables: %v", err)
 	}
+	if err := ensureMessageStoreSchema(db); err != nil {
+		t.Fatalf("failed to migrate schema: %v", err)
+	}
 	t.Cleanup(func() { _ = db.Close() })
 	return &MessageStore{db: db}
 }
@@ -1361,5 +1364,52 @@ func TestCallChatJID_Precedence(t *testing.T) {
 				t.Errorf("callChatJID() = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestExtractMediaDirectPath(t *testing.T) {
+	audio := &waProto.Message{AudioMessage: &waProto.AudioMessage{
+		URL:        proto.String("https://web.whatsapp.net"),
+		DirectPath: proto.String("/v/t62.7117-24/voice.enc?ccb=11-4&oh=abc&oe=def"),
+		PTT:        proto.Bool(true),
+	}}
+	if got := extractMediaDirectPath(audio); got != "/v/t62.7117-24/voice.enc?ccb=11-4&oh=abc&oe=def" {
+		t.Fatalf("audio direct path = %q", got)
+	}
+	image := &waProto.Message{ImageMessage: &waProto.ImageMessage{DirectPath: proto.String("/img")}}
+	if got := extractMediaDirectPath(image); got != "/img" {
+		t.Fatalf("image direct path = %q", got)
+	}
+	if got := extractMediaDirectPath(&waProto.Message{Conversation: proto.String("hi")}); got != "" {
+		t.Fatalf("text message direct path = %q, want empty", got)
+	}
+	if got := extractMediaDirectPath(nil); got != "" {
+		t.Fatalf("nil message direct path = %q, want empty", got)
+	}
+}
+
+func TestStoreMediaDirectPath(t *testing.T) {
+	ms := newTestMessageStore(t)
+	chatJID := "15551234567@s.whatsapp.net"
+	if err := ms.StoreChat(chatJID, "", time.Now()); err != nil {
+		t.Fatalf("StoreChat: %v", err)
+	}
+	if err := ms.StoreMessage("MSG1", chatJID, "15551234567", "", time.Now(), false,
+		"audio", "audio.ogg", "https://web.whatsapp.net", []byte{1}, []byte{2}, []byte{3}, 10); err != nil {
+		t.Fatalf("StoreMessage: %v", err)
+	}
+	if err := ms.StoreMediaDirectPath("MSG1", chatJID, "/v/voice.enc"); err != nil {
+		t.Fatalf("StoreMediaDirectPath: %v", err)
+	}
+	// An empty path must not clobber a stored one.
+	if err := ms.StoreMediaDirectPath("MSG1", chatJID, ""); err != nil {
+		t.Fatalf("StoreMediaDirectPath(empty): %v", err)
+	}
+	var got string
+	if err := ms.db.QueryRow("SELECT direct_path FROM messages WHERE id = ? AND chat_jid = ?", "MSG1", chatJID).Scan(&got); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if got != "/v/voice.enc" {
+		t.Fatalf("direct_path = %q, want /v/voice.enc", got)
 	}
 }
