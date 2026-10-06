@@ -173,3 +173,14 @@ flyctl deploy --config deploy/fly/fly.toml --dockerfile deploy/fly/Dockerfile .
 
 The deploy preserves the volume, so the WhatsApp session and message
 history survive across deploys.
+
+## Voice message transcription
+
+`transcribe_voice_message` runs Whisper (`base`, int8, CPU) inside the
+machine. The image is built with `uv sync --extra transcribe` and the model
+is baked in at build time (`HF_HOME=/opt/hf`), so nothing is downloaded at
+runtime and no audio leaves the machine. `start.sh` passes
+`--extra transcribe` to `uv run` so the boot-time sync keeps it installed.
+Whisper needs roughly 300 MB of RAM, hence `memory_mb = 1024` in `fly.toml`.
+To trade accuracy for speed/memory, change `WHATSAPP_TRANSCRIBE_MODEL` in
+the Dockerfile (both the `ENV` and the bake step) to `tiny` or `small`.

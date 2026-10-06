@@ -4,6 +4,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from transcribe import TranscriptionUnavailableError, transcribe_audio
 from whatsapp import (
     download_media as whatsapp_download_media,
 )
@@ -351,6 +352,8 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
 def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
 
+    To find out what a voice message says, use transcribe_voice_message instead.
+
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
@@ -358,12 +361,42 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
     Returns:
         A dictionary containing success status, a status message, and the file path if successful
     """
-    file_path = whatsapp_download_media(message_id, chat_jid)
+    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
 
     if file_path:
-        return {"success": True, "message": "Media downloaded successfully", "file_path": file_path}
-    else:
-        return {"success": False, "message": "Failed to download media"}
+        return {"success": True, "message": status_message, "file_path": file_path}
+    return {"success": False, "message": f"Failed to download media: {status_message}"}
+
+
+@mcp.tool()
+def transcribe_voice_message(message_id: str, chat_jid: str, language: str | None = None) -> dict[str, Any]:
+    """Transcribe a WhatsApp voice message (or other audio/video message) to text.
+
+    Downloads the media through the bridge and transcribes it locally with Whisper;
+    the audio is never sent to a third-party service. The first call loads the
+    model, so it can take a while.
+
+    Args:
+        message_id: The ID of the voice message (media_type "audio" in list_messages)
+        chat_jid: The JID of the chat containing the message
+        language: Optional ISO 639-1 language code (e.g. "en", "es"). Auto-detected if omitted.
+
+    Returns:
+        A dictionary with success status and, on success, the transcript text,
+        detected language, duration in seconds, and the local file path
+    """
+    file_path, status_message = whatsapp_download_media(message_id, chat_jid)
+    if not file_path:
+        return {"success": False, "message": f"Failed to download media: {status_message}"}
+
+    try:
+        result = transcribe_audio(file_path, language=language)
+    except TranscriptionUnavailableError as e:
+        return {"success": False, "message": str(e), "file_path": file_path}
+    except Exception as e:
+        return {"success": False, "message": f"Failed to transcribe audio: {e}", "file_path": file_path}
+
+    return {"success": True, "file_path": file_path, **result}
 
 
 def shutdown_handler(signum, frame):

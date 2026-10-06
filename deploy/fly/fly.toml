@@ -64,4 +64,4 @@ primary_region = "dfw"
 [[vm]]
   cpu_kind  = "shared"
   cpus      = 1
-  memory_mb = 512
+  memory_mb = 1024  # Whisper (transcribe_voice_message) needs ~300 MB on top of the bridge

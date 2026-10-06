@@ -19,7 +19,7 @@ echo "[start.sh] launching whatsapp-bridge on 127.0.0.1:${WHATSAPP_BRIDGE_PORT}"
 BRIDGE_PID=$!
 
 echo "[start.sh] launching mcp http server on 127.0.0.1:${MCP_PORT}"
-( cd /app/mcp-server && exec uv run --frozen python mcp_http.py ) &
+( cd /app/mcp-server && exec uv run --frozen --extra transcribe python mcp_http.py ) &
 MCP_PID=$!
 
 echo "[start.sh] launching caddy on :${PUBLIC_PORT}"

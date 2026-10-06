@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import os.path
 import sqlite3
@@ -20,6 +21,10 @@ WHATSMEOW_DB_PATH = os.getenv(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "whatsapp-bridge", "store", "whatsapp.db"),
 )
 WHATSAPP_API_BASE_URL = os.getenv("WHATSAPP_API_URL", "http://localhost:8080/api")
+
+# Never print() in this module: the MCP stdio transport owns stdout, and stray
+# lines there corrupt the JSON-RPC stream. The logging module writes to stderr.
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -282,7 +287,7 @@ def get_sender_name(sender_jid: str) -> str:
         return sender_jid
 
     except sqlite3.Error as e:
-        print(f"Database error while getting sender name: {e}")
+        logger.error(f"Database error while getting sender name: {e}")
         return sender_jid
     finally:
         if "conn" in locals():
@@ -306,7 +311,7 @@ def format_message(message: Message, show_chat_info: bool = True) -> None:
         sender_name = get_sender_name(message.sender) if not message.is_from_me else "Me"
         output += f"From: {sender_name}: {content_prefix}{message.content}\n"
     except Exception as e:
-        print(f"Error formatting message: {e}")
+        logger.error(f"Error formatting message: {e}")
     return output
 
 
@@ -450,7 +455,7 @@ def list_messages(
         return [msg_to_dict(msg) for msg in result]
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -548,7 +553,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> Mes
         return MessageContext(message=target_message, before=before_messages, after=after_messages)
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         raise
     finally:
         if "conn" in locals():
@@ -571,16 +576,27 @@ def list_chats(
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        # Build base query
+        # Build base query. The last-message columns are referenced by tuple
+        # index downstream, so we keep the result shape constant and emit
+        # static NULLs when the messages table is not joined — otherwise the
+        # SELECT references messages.* with no FROM/JOIN and SQLite errors
+        # out with "no such column: messages.content".
+        if include_last_message:
+            last_message_select = (
+                "messages.content as last_message, "
+                "messages.sender as last_sender, "
+                "messages.is_from_me as last_is_from_me"
+            )
+        else:
+            last_message_select = "NULL as last_message, NULL as last_sender, NULL as last_is_from_me"
+
         query_parts = [
-            """
+            f"""
             SELECT
                 chats.jid,
                 chats.name,
                 chats.last_message_time,
-                messages.content as last_message,
-                messages.sender as last_sender,
-                messages.is_from_me as last_is_from_me
+                {last_message_select}
             FROM chats
         """
         ]
@@ -631,7 +647,7 @@ def list_chats(
         return result
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -672,7 +688,7 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
                 contact = Contact(phone_number=jid.split("@")[0], name=name, jid=jid)
                 result.append(contact_to_dict(contact))
     except sqlite3.Error as e:
-        print(f"Database error (messages.db): {e}")
+        logger.error(f"Database error (messages.db): {e}")
     finally:
         if "conn" in locals():
             conn.close()
@@ -703,7 +719,7 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
                     contact = Contact(phone_number=their_jid.split("@")[0], name=name, jid=their_jid)
                     result.append(contact_to_dict(contact))
         except sqlite3.Error as e:
-            print(f"Database error (whatsapp.db): {e}")
+            logger.error(f"Database error (whatsapp.db): {e}")
         finally:
             if "conn2" in locals():
                 conn2.close()
@@ -760,7 +776,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
         return result
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return []
     finally:
         if "conn" in locals():
@@ -821,7 +837,7 @@ def get_last_interaction(jid: str) -> dict[str, Any] | None:
         return msg_to_dict(message)
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -838,14 +854,20 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
         conn = sqlite3.connect(MESSAGES_DB_PATH)
         cursor = conn.cursor()
 
-        query = """
+        # See list_chats: keep result tuple shape stable across the
+        # include_last_message branch by emitting static NULLs when we
+        # don't JOIN the messages table.
+        if include_last_message:
+            last_message_select = "m.content as last_message, m.sender as last_sender, m.is_from_me as last_is_from_me"
+        else:
+            last_message_select = "NULL as last_message, NULL as last_sender, NULL as last_is_from_me"
+
+        query = f"""
             SELECT
                 c.jid,
                 c.name,
                 c.last_message_time,
-                m.content as last_message,
-                m.sender as last_sender,
-                m.is_from_me as last_is_from_me
+                {last_message_select}
             FROM chats c
         """
 
@@ -874,7 +896,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
         return chat_to_dict(chat)
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -921,7 +943,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any] | Non
         return chat_to_dict(chat)
 
     except sqlite3.Error as e:
-        print(f"Database error: {e}")
+        logger.error(f"Database error: {e}")
         return None
     finally:
         if "conn" in locals():
@@ -1027,41 +1049,37 @@ def send_audio_message(recipient: str, media_path: str) -> tuple[bool, str]:
         return False, f"Unexpected error: {str(e)}"
 
 
-def download_media(message_id: str, chat_jid: str) -> str | None:
-    """Download media from a message and return the local file path.
+def download_media(message_id: str, chat_jid: str) -> tuple[str | None, str]:
+    """Download media from a message via the bridge.
 
     Args:
         message_id: The ID of the message containing the media
         chat_jid: The JID of the chat containing the message
 
     Returns:
-        The local file path if download was successful, None otherwise
+        A tuple of (local file path or None, status message). On failure the
+        message carries the bridge's reason so callers can surface it.
     """
+    url = f"{WHATSAPP_API_BASE_URL}/download"
+    payload = {"message_id": message_id, "chat_jid": chat_jid}
+
     try:
-        url = f"{WHATSAPP_API_BASE_URL}/download"
-        payload = {"message_id": message_id, "chat_jid": chat_jid}
-
-        response = requests.post(url, json=payload)
-
-        if response.status_code == 200:
-            result = response.json()
-            if result.get("success", False):
-                path = result.get("path")
-                print(f"Media downloaded successfully: {path}")
-                return path
-            else:
-                print(f"Download failed: {result.get('message', 'Unknown error')}")
-                return None
-        else:
-            print(f"Error: HTTP {response.status_code} - {response.text}")
-            return None
-
+        response = requests.post(url, json=payload, timeout=120)
     except requests.RequestException as e:
-        print(f"Request error: {str(e)}")
-        return None
-    except json.JSONDecodeError:
-        print(f"Error parsing response: {response.text}")
-        return None
-    except Exception as e:
-        print(f"Unexpected error: {str(e)}")
-        return None
+        logger.error("Download request error: %s", e)
+        return None, f"Could not reach the WhatsApp bridge at {WHATSAPP_API_BASE_URL}: {e}"
+
+    try:
+        result = response.json()
+    except ValueError:
+        logger.error("Download error: HTTP %s - %s", response.status_code, response.text)
+        return None, f"Bridge returned HTTP {response.status_code}: {response.text.strip()}"
+
+    if response.status_code == 200 and result.get("success", False) and result.get("path"):
+        path = result["path"]
+        logger.info("Media downloaded successfully: %s", path)
+        return path, result.get("message", "Media downloaded successfully")
+
+    message = result.get("message") or f"Bridge returned HTTP {response.status_code}"
+    logger.error("Download failed: %s", message)
+    return None, message

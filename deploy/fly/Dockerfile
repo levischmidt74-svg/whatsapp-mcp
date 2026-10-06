@@ -40,7 +40,14 @@ COPY --from=bridge-build /out/whatsapp-bridge /app/bridge/whatsapp-bridge
 
 WORKDIR /app/mcp-server
 COPY whatsapp-mcp-server/pyproject.toml whatsapp-mcp-server/uv.lock ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --extra transcribe
+# Bake the Whisper model into the image so transcribe_voice_message works on
+# the first call after every deploy instead of re-downloading at runtime.
+ENV HF_HOME=/opt/hf \
+    WHATSAPP_TRANSCRIBE_MODEL=base \
+    WHATSAPP_TRANSCRIBE_DEVICE=cpu \
+    WHATSAPP_TRANSCRIBE_COMPUTE_TYPE=int8
+RUN .venv/bin/python -c "from faster_whisper import WhisperModel; WhisperModel('base', device='cpu', compute_type='int8')"
 # python-multipart (OAuth consent form) and segno (the /qr page) are real
 # dependencies in pyproject.toml, not `uv pip install`ed here: start.sh runs
 # `uv run --frozen`, which rebuilds .venv from uv.lock at boot and discards
