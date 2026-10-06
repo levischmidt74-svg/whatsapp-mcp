@@ -206,6 +206,25 @@ Download media from a received message.
 - `message_id` (required): ID of the message with media
 - `chat_jid` (required): JID of the chat containing the message
 
+#### `transcribe_voice_message`
+
+Download a voice message and transcribe it to text locally with [faster-whisper](https://github.com/SYSTRAN/faster-whisper). The audio never leaves your machine; the Whisper model (~150 MB for `base`) is downloaded from Hugging Face on first use and cached.
+
+**Parameters:**
+
+- `message_id` (required): ID of the voice message (`media_type` `audio`)
+- `chat_jid` (required): JID of the chat containing the message
+- `language` (optional): ISO 639-1 code such as `en` or `es`; auto-detected if omitted
+
+Transcription is an optional extra. Install it once:
+
+```bash
+cd whatsapp-mcp-server
+uv sync --extra transcribe
+```
+
+and add `"--extra", "transcribe"` before `"run"` in your MCP client config, e.g. `"args": ["--directory", "/path/to/whatsapp-mcp/whatsapp-mcp-server", "--extra", "transcribe", "run", "main.py"]`. Without it, the tool returns an error explaining how to install it.
+
 ### Chat Operations
 
 #### `list_chats`
@@ -268,6 +287,9 @@ Copy `.env.example` to `.env` and configure as needed:
 | `WHATSAPP_BRIDGE_PORT` | `8080`                                   | Port for Go bridge REST API                  |
 | `WEBHOOK_URL`          | `http://localhost:8769/whatsapp/webhook` | Webhook for incoming messages                |
 | `FORWARD_SELF`         | `false`                                  | Forward messages sent by self                |
+| `WHATSAPP_TRANSCRIBE_MODEL` | `base`                              | Whisper model for `transcribe_voice_message` (`tiny`, `small`, `medium`, `large-v3`, …) |
+| `WHATSAPP_TRANSCRIBE_DEVICE` | `auto`                             | `cpu`, `cuda`, or `auto`                     |
+| `WHATSAPP_TRANSCRIBE_COMPUTE_TYPE` | `int8`                       | CTranslate2 compute type (`int8`, `float16`, …) |
 | `WHATSAPP_DB_PATH`     | `../whatsapp-bridge/store/messages.db`   | Path to SQLite database                      |
 | `WHATSMEOW_DB_PATH`    | `../whatsapp-bridge/store/whatsapp.db`   | whatsmeow DB used for LID ↔ phone resolution |
 | `WHATSAPP_API_URL`     | `http://localhost:8080/api`              | Go bridge REST API URL                       |

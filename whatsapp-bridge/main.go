@@ -161,6 +161,9 @@ func ensureMessageStoreSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "chats", "ephemeral_setting_timestamp", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return fmt.Errorf("failed to ensure chats.ephemeral_setting_timestamp column: %w", err)
 	}
+	if err := ensureColumn(db, "messages", "direct_path", "TEXT"); err != nil {
+		return fmt.Errorf("failed to ensure messages.direct_path column: %w", err)
+	}
 	return nil
 }
 
@@ -1183,6 +1186,24 @@ func extractQuotedMessageInfo(msg *waProto.Message) (quotedMessageId string, quo
 	return quotedMessageId, quotedSender, quotedContent
 }
 
+// extractMediaDirectPath returns the direct path of the message's media, if any.
+func extractMediaDirectPath(msg *waProto.Message) string {
+	if msg == nil {
+		return ""
+	}
+	switch {
+	case msg.GetImageMessage() != nil:
+		return msg.GetImageMessage().GetDirectPath()
+	case msg.GetVideoMessage() != nil:
+		return msg.GetVideoMessage().GetDirectPath()
+	case msg.GetAudioMessage() != nil:
+		return msg.GetAudioMessage().GetDirectPath()
+	case msg.GetDocumentMessage() != nil:
+		return msg.GetDocumentMessage().GetDirectPath()
+	}
+	return ""
+}
+
 // Extract media info from a message. Filenames embed the message ID so that
 // two messages arriving in the same second do not collide on a single file.
 func extractMediaInfo(msg *waProto.Message, msgTimestamp time.Time, msgID string) (mediaType string, filename string, url string, mediaKey []byte, fileSHA256 []byte, fileEncSHA256 []byte, fileLength uint64) {
@@ -1384,6 +1405,8 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	)
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
+	} else if dpErr := messageStore.StoreMediaDirectPath(msg.Info.ID, chatJID, extractMediaDirectPath(msg.Message)); dpErr != nil {
+		logger.Warnf("Failed to store media direct path: %v", dpErr)
 	}
 
 	// For image messages, download media synchronously so we can include the base64
@@ -1489,6 +1512,20 @@ func (store *MessageStore) StoreMediaInfo(id, chatJID, url string, mediaKey, fil
 	return err
 }
 
+// StoreMediaDirectPath records the media direct path WhatsApp sent with the
+// message. Downloads prefer it over the CDN URL, which expires and is a bare
+// web.whatsapp.net placeholder for many voice notes.
+func (store *MessageStore) StoreMediaDirectPath(id, chatJID, directPath string) error {
+	if directPath == "" {
+		return nil
+	}
+	_, err := store.db.Exec(
+		"UPDATE messages SET direct_path = ? WHERE id = ? AND chat_jid = ?",
+		directPath, id, chatJID,
+	)
+	return err
+}
+
 // Get media info from the database
 func (store *MessageStore) GetMediaInfo(id, chatJID string) (string, string, string, []byte, []byte, []byte, uint64, error) {
 	var mediaType, filename, url string
@@ -1552,7 +1589,7 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 // Function to download media from a message
 func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
 	// Query the database for the message including timestamp
-	var mediaType, url string
+	var mediaType, url, storedDirectPath string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
 	var fileLength uint64
 	var timestamp time.Time
@@ -1560,9 +1597,9 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	// Get media info AND timestamp from the database
 	err = messageStore.db.QueryRow(
-		"SELECT media_type, url, media_key, file_sha256, file_enc_sha256, file_length, timestamp FROM messages WHERE id = ? AND chat_jid = ?",
+		"SELECT media_type, COALESCE(url, ''), media_key, file_sha256, file_enc_sha256, file_length, timestamp, COALESCE(direct_path, '') FROM messages WHERE id = ? AND chat_jid = ?",
 		messageID, chatJID,
-	).Scan(&mediaType, &url, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength, &timestamp)
+	).Scan(&mediaType, &url, &mediaKey, &fileSHA256, &fileEncSHA256, &fileLength, &timestamp, &storedDirectPath)
 
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to find message: %v", err)
@@ -1615,14 +1652,18 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	}
 
 	// If we don't have all the media info we need, we can't download
-	if url == "" || len(mediaKey) == 0 || len(fileSHA256) == 0 || len(fileEncSHA256) == 0 || fileLength == 0 {
+	if (url == "" && storedDirectPath == "") || len(mediaKey) == 0 || len(fileSHA256) == 0 || len(fileEncSHA256) == 0 || fileLength == 0 {
 		return false, "", "", "", fmt.Errorf("incomplete media information for download")
 	}
 
 	fmt.Printf("Attempting to download media for message %s in chat %s...\n", messageID, chatJID)
 
-	// Extract direct path from URL
-	directPath := extractDirectPathFromURL(url)
+	// Prefer the direct path WhatsApp sent; rows stored before direct_path
+	// existed fall back to deriving it from the URL.
+	directPath := storedDirectPath
+	if directPath == "" {
+		directPath = extractDirectPathFromURL(url)
+	}
 
 	// Create a downloader that implements DownloadableMessage
 	var waMediaType whatsmeow.MediaType
@@ -1651,6 +1692,13 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	// Download the media using whatsmeow client
 	mediaData, err := client.Download(context.Background(), downloader)
+	if err != nil && downloader.URL != "" && strings.HasPrefix(directPath, "/") {
+		// The CDN URL expires after a while. Retry via the direct path, which
+		// whatsmeow resolves against freshly fetched media hosts.
+		fmt.Printf("Download via URL failed (%v), retrying via direct path\n", err)
+		downloader.URL = ""
+		mediaData, err = client.Download(context.Background(), downloader)
+	}
 	if err != nil {
 		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
 	}
@@ -2580,6 +2628,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					logger.Warnf("Failed to store history message: %v", err)
 				} else {
 					syncedCount++
+					if msg.Message.Message != nil {
+						if dpErr := messageStore.StoreMediaDirectPath(histMsgID, chatJID, extractMediaDirectPath(msg.Message.Message)); dpErr != nil {
+							logger.Warnf("Failed to store media direct path: %v", dpErr)
+						}
+					}
 					// Log successful message storage
 					if mediaType != "" {
 						logger.Infof("Stored message: [%s] %s -> %s: [%s: %s] %s",
