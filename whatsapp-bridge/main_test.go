@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -1411,5 +1412,38 @@ func TestStoreMediaDirectPath(t *testing.T) {
 	}
 	if got != "/v/voice.enc" {
 		t.Fatalf("direct_path = %q, want /v/voice.enc", got)
+	}
+}
+
+// The MCP server reads messages.db directly; these are its hot query shapes.
+// They must be served by an index rather than a full scan of messages.
+func TestMessageStoreSchema_ReadQueriesUseIndexes(t *testing.T) {
+	ms := newTestMessageStore(t)
+
+	cases := map[string]string{
+		"chat history": `SELECT id FROM messages WHERE chat_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT 5`,
+		"recent":       `SELECT id FROM messages ORDER BY timestamp DESC LIMIT 20`,
+		"last message": `SELECT m.content FROM chats c LEFT JOIN messages m ON c.jid = m.chat_jid AND c.last_message_time = m.timestamp`,
+	}
+	for name, query := range cases {
+		args := make([]interface{}, strings.Count(query, "?"))
+		rows, err := ms.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+		if err != nil {
+			t.Fatalf("%s: explain failed: %v", name, err)
+		}
+		var plan []string
+		for rows.Next() {
+			var id, parent, notUsed int
+			var detail string
+			if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+				t.Fatalf("%s: scan failed: %v", name, err)
+			}
+			plan = append(plan, detail)
+		}
+		_ = rows.Close()
+		joined := strings.Join(plan, "; ")
+		if !strings.Contains(joined, "idx_messages_") {
+			t.Errorf("%s: expected an idx_messages_* index, got plan: %s", name, joined)
+		}
 	}
 }

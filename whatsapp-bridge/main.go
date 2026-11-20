@@ -164,6 +164,17 @@ func ensureMessageStoreSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "messages", "direct_path", "TEXT"); err != nil {
 		return fmt.Errorf("failed to ensure messages.direct_path column: %w", err)
 	}
+	// The primary key (id, chat_jid) can't serve the MCP server's reads, which
+	// filter by chat and order by time. Without these every list_messages /
+	// list_chats call scans the whole table (several times per call when
+	// context is included), and each long read also holds the lock the
+	// bridge needs to write. Built once on first start after upgrade.
+	if _, err := db.Exec(`
+		CREATE INDEX IF NOT EXISTS idx_messages_chat_timestamp ON messages(chat_jid, timestamp);
+		CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages(timestamp);
+	`); err != nil {
+		return fmt.Errorf("failed to ensure messages indexes: %w", err)
+	}
 	return nil
 }
 
