@@ -24,6 +24,9 @@ INSTALL_HINT = (
 
 _model = None
 _model_lock = threading.Lock()
+# Decoding is CPU- and memory-heavy; run one at a time so concurrent requests
+# queue instead of competing for the same cores.
+_transcribe_lock = threading.Lock()
 
 
 class TranscriptionUnavailableError(RuntimeError):
@@ -61,9 +64,10 @@ def transcribe_audio(file_path: str, language: str | None = None) -> dict[str, A
         raise FileNotFoundError(f"Audio file not found: {file_path}")
 
     model = _get_model()
-    segments, info = model.transcribe(file_path, language=language, vad_filter=True)
-    # segments is a lazy generator; joining it runs the actual decoding.
-    text = " ".join(segment.text.strip() for segment in segments).strip()
+    with _transcribe_lock:
+        segments, info = model.transcribe(file_path, language=language, vad_filter=True)
+        # segments is a lazy generator; joining it runs the actual decoding.
+        text = " ".join(segment.text.strip() for segment in segments).strip()
 
     return {
         "text": text,

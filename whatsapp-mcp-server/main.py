@@ -1,7 +1,10 @@
+import functools
 import signal
 import sys
+from collections.abc import Callable
 from typing import Any
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 
 from transcribe import TranscriptionUnavailableError, transcribe_audio
@@ -49,7 +52,25 @@ from whatsapp import (
 mcp = FastMCP("whatsapp")
 
 
-@mcp.tool()
+def tool(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Register ``fn`` as an MCP tool that runs in a worker thread.
+
+    FastMCP calls synchronous tools directly on its event loop, so one slow
+    call (a voice-note transcription, a media download, a send waiting on the
+    bridge) would stall every other request, and over HTTP every other client,
+    until it finished. Running each tool in a thread keeps the server
+    responsive. The plain function is returned so it stays directly callable.
+    """
+
+    @functools.wraps(fn)
+    async def run_in_thread(*args: Any, **kwargs: Any) -> Any:
+        return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+
+    mcp.tool()(run_in_thread)
+    return fn
+
+
+@tool
 def search_contacts(query: str) -> list[dict[str, Any]]:
     """Search WhatsApp contacts by name or phone number.
 
@@ -60,7 +81,7 @@ def search_contacts(query: str) -> list[dict[str, Any]]:
     return contacts
 
 
-@mcp.tool()
+@tool
 def get_contact(
     identifier: str | None = None,
     phone_number: str | None = None,
@@ -156,7 +177,7 @@ def get_contact(
     }
 
 
-@mcp.tool()
+@tool
 def list_messages(
     after: str | None = None,
     before: str | None = None,
@@ -205,7 +226,7 @@ def list_messages(
     return messages
 
 
-@mcp.tool()
+@tool
 def list_chats(
     query: str | None = None,
     limit: int = 50,
@@ -230,7 +251,7 @@ def list_chats(
     return chats
 
 
-@mcp.tool()
+@tool
 def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]:
     """Get WhatsApp chat metadata by JID.
 
@@ -242,7 +263,7 @@ def get_chat(chat_jid: str, include_last_message: bool = True) -> dict[str, Any]
     return chat
 
 
-@mcp.tool()
+@tool
 def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any]:
     """Get WhatsApp chat metadata by sender phone number.
 
@@ -253,7 +274,7 @@ def get_direct_chat_by_contact(sender_phone_number: str) -> dict[str, Any]:
     return chat
 
 
-@mcp.tool()
+@tool
 def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str, Any]]:
     """Get all WhatsApp chats involving the contact.
 
@@ -266,7 +287,7 @@ def get_contact_chats(jid: str, limit: int = 20, page: int = 0) -> list[dict[str
     return chats
 
 
-@mcp.tool()
+@tool
 def get_last_interaction(jid: str) -> dict[str, Any]:
     """Get most recent WhatsApp message involving the contact.
 
@@ -280,7 +301,7 @@ def get_last_interaction(jid: str) -> dict[str, Any]:
     return message if message else {}
 
 
-@mcp.tool()
+@tool
 def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dict[str, Any]:
     """Get context around a specific WhatsApp message.
 
@@ -293,7 +314,7 @@ def get_message_context(message_id: str, before: int = 5, after: int = 5) -> dic
     return context
 
 
-@mcp.tool()
+@tool
 def send_message(recipient: str, message: str) -> dict[str, Any]:
     """Send a WhatsApp message to a person or group. For group chats use the JID.
 
@@ -314,7 +335,7 @@ def send_message(recipient: str, message: str) -> dict[str, Any]:
     return {"success": success, "message": status_message}
 
 
-@mcp.tool()
+@tool
 def send_file(recipient: str, media_path: str) -> dict[str, Any]:
     """Send a file such as a picture, raw audio, video or document via WhatsApp to the specified recipient. For group messages use the JID.
 
@@ -332,7 +353,7 @@ def send_file(recipient: str, media_path: str) -> dict[str, Any]:
     return {"success": success, "message": status_message}
 
 
-@mcp.tool()
+@tool
 def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
     """Send any audio file as a WhatsApp audio message to the specified recipient. For group messages use the JID. If it errors due to ffmpeg not being installed, use send_file instead.
 
@@ -348,7 +369,7 @@ def send_audio_message(recipient: str, media_path: str) -> dict[str, Any]:
     return {"success": success, "message": status_message}
 
 
-@mcp.tool()
+@tool
 def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
     """Download media from a WhatsApp message and get the local file path.
 
@@ -368,7 +389,7 @@ def download_media(message_id: str, chat_jid: str) -> dict[str, Any]:
     return {"success": False, "message": f"Failed to download media: {status_message}"}
 
 
-@mcp.tool()
+@tool
 def transcribe_voice_message(message_id: str, chat_jid: str, language: str | None = None) -> dict[str, Any]:
     """Transcribe a WhatsApp voice message (or other audio/video message) to text.
 
