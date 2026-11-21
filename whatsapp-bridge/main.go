@@ -2147,9 +2147,13 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("✓ Successfully connected to WhatsApp servers")
+			clearLoggedOut(loggedOutFile)
 
 		case *events.LoggedOut:
 			logger.Warnf("⚠️  Device logged out, please scan QR code to log in again")
+			if err := markLoggedOut(loggedOutFile); err != nil {
+				logger.Warnf("Failed to record logged-out state: %v", err)
+			}
 
 		case *events.Disconnected:
 			logger.Warnf("⚠️  Disconnected from WhatsApp servers, will attempt reconnection...")
@@ -2195,46 +2199,42 @@ func main() {
 		}
 	})
 
-	// Create channel to track connection success
-	connected := make(chan bool, 1)
-
-	// Add connection retry logic
-	maxRetries := 3
-	var connErr error
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		logger.Infof("Connection attempt %d/%d...", attempt, maxRetries)
+	// Connect, retrying until it works. A headless deployment has nobody to
+	// restart the bridge, so it must not give up: it keeps offering fresh QR
+	// codes while unpaired and keeps redialling while WhatsApp is unreachable.
+	for attempt := 1; ; attempt++ {
+		logger.Infof("Connection attempt %d...", attempt)
 
 		// Connect to WhatsApp
 		if client.Store.ID == nil {
 			// No ID stored, this is a new client, need to pair with phone
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
 
 			qrChan, connErr := client.GetQRChannel(ctx)
 			if connErr != nil {
+				cancel()
 				logger.Errorf("Failed to get QR channel: %v", connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 
 			connErr = client.Connect()
 			if connErr != nil {
+				cancel()
 				logger.Errorf("Failed to connect (attempt %d): %v", attempt, connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
+				time.Sleep(retryDelay(attempt))
 				continue
 			}
 
-			// Print QR code for pairing with phone
+			// Print the first QR code for pairing from a terminal, and
+			// publish every code (they rotate) for the pairing page.
 			qrCodeShown := false
+			paired := false
 			for evt := range qrChan {
 				if evt.Event == "code" {
+					if err := writePairQR(pairQRFile, evt.Code); err != nil {
+						logger.Warnf("Failed to publish pairing code: %v", err)
+					}
 					if !qrCodeShown {
 						fmt.Println("\nScan this QR code with your WhatsApp app:")
 						qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
@@ -2242,45 +2242,37 @@ func main() {
 						qrCodeShown = true
 					}
 				} else if evt.Event == "success" {
-					connected <- true
+					paired = true
 					break
 				} else if evt.Event == "timeout" {
 					logger.Warnf("QR code timed out")
 					break
 				}
 			}
+			cancel()
+			clearPairQR(pairQRFile)
 
-			// Wait for connection with timeout
-			select {
-			case <-connected:
+			if paired {
+				clearLoggedOut(loggedOutFile)
 				fmt.Println("\nSuccessfully connected and authenticated!")
-				goto connectionSuccess
-			case <-ctx.Done():
-				logger.Errorf("Timeout waiting for QR code scan (attempt %d)", attempt)
-				client.Disconnect()
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(10 * time.Second)
-				continue
+				break
 			}
-		} else {
-			// Already logged in, just connect
-			connErr = client.Connect()
-			if connErr != nil {
-				logger.Errorf("Failed to connect (attempt %d): %v", attempt, connErr)
-				if attempt == maxRetries {
-					return
-				}
-				time.Sleep(5 * time.Second)
-				continue
-			}
-			connected <- true
-			break
-		}
-	}
 
-connectionSuccess:
+			logger.Warnf("Nobody scanned the QR code (attempt %d); offering a new one", attempt)
+			client.Disconnect()
+			time.Sleep(retryDelay(attempt))
+			continue
+		}
+
+		// Already logged in, just connect
+		connErr := client.Connect()
+		if connErr != nil {
+			logger.Errorf("Failed to connect (attempt %d): %v", attempt, connErr)
+			time.Sleep(retryDelay(attempt))
+			continue
+		}
+		break
+	}
 
 	// Wait a moment for connection to stabilize
 	time.Sleep(2 * time.Second)
