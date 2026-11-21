@@ -2363,17 +2363,17 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 			var displayName, convName *string
 			// Try to extract the fields we care about regardless of the exact type
 			v := reflect.ValueOf(conversation)
-			if v.Kind() == reflect.Ptr && !v.IsNil() {
+			if v.Kind() == reflect.Pointer && !v.IsNil() {
 				v = v.Elem()
 
 				// Try to find DisplayName field
-				if displayNameField := v.FieldByName("DisplayName"); displayNameField.IsValid() && displayNameField.Kind() == reflect.Ptr && !displayNameField.IsNil() {
+				if displayNameField := v.FieldByName("DisplayName"); displayNameField.IsValid() && displayNameField.Kind() == reflect.Pointer && !displayNameField.IsNil() {
 					dn := displayNameField.Elem().String()
 					displayName = &dn
 				}
 
 				// Try to find Name field
-				if nameField := v.FieldByName("Name"); nameField.IsValid() && nameField.Kind() == reflect.Ptr && !nameField.IsNil() {
+				if nameField := v.FieldByName("Name"); nameField.IsValid() && nameField.Kind() == reflect.Pointer && !nameField.IsNil() {
 					n := nameField.Elem().String()
 					convName = &n
 				}
