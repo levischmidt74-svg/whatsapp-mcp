@@ -1420,6 +1420,15 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		logger.Warnf("Failed to store media direct path: %v", dpErr)
 	}
 
+	// Tell the signal receiver (if configured) that a message landed. Sent in
+	// the background and only once the row is stored, so the receiver can
+	// read it straight away.
+	if err == nil {
+		if sig, ok := newMessageSignal(msg, resolvedChat); ok {
+			messageSignals.Notify(sig)
+		}
+	}
+
 	// For image messages, download media synchronously so we can include the base64
 	// payload in the webhook. Other media types (video, audio, document) are still
 	// downloaded asynchronously since they are not passed to the AI vision pipeline.
@@ -1968,6 +1977,24 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	}()
 }
 
+// handleStoreEvent handles the events that write messages to the store and
+// reports whether evt was one of them. Only live messages can produce a
+// message signal: history sync goes through handleHistorySync, which never
+// signals, and receipts, presence and the like are not handled here at all.
+func handleStoreEvent(client *whatsmeow.Client, messageStore *MessageStore, evt interface{}, logger waLog.Logger) bool {
+	switch v := evt.(type) {
+	case *events.Message:
+		// Process regular messages
+		handleMessage(client, messageStore, v, logger)
+		return true
+	case *events.HistorySync:
+		// Process history sync events
+		handleHistorySync(client, messageStore, v, logger)
+		return true
+	}
+	return false
+}
+
 func main() {
 	flag.Parse()
 
@@ -2048,6 +2075,8 @@ func main() {
 	}
 	defer func() { _ = messageStore.Close() }()
 
+	messageSignals = newSignalSenderFromEnv(logger.Infof)
+
 	if err := messageStore.MigrateLegacyLIDChatsToPhoneJIDs("store/whatsapp.db", logger); err != nil {
 		logger.Errorf("Failed to migrate legacy LID chat rows: %v", err)
 		return
@@ -2063,15 +2092,10 @@ func main() {
 
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
+		if handleStoreEvent(client, messageStore, evt, logger) {
+			return
+		}
 		switch v := evt.(type) {
-		case *events.Message:
-			// Process regular messages
-			handleMessage(client, messageStore, v, logger)
-
-		case *events.HistorySync:
-			// Process history sync events
-			handleHistorySync(client, messageStore, v, logger)
-
 		case *events.GroupInfo:
 			if v.Ephemeral != nil {
 				expiration := uint32(0)

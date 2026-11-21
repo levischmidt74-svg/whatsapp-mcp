@@ -103,6 +103,9 @@ A failing blocking job is a hard block — fix it or explain in the PR why it's 
 | `WHATSAPP_BRIDGE_PORT` | `8080` | Port the bridge binds to |
 | `WEBHOOK_URL` | `http://localhost:8769/whatsapp/webhook` | Outgoing webhook for incoming messages (empty = disabled) |
 | `FORWARD_SELF` | `false` | Whether self-sent messages are forwarded |
+| `WHATSAPP_SIGNAL_URL` | _(unset)_ | Receiver for metadata-only new-message signals; off unless this and the secret are set |
+| `WHATSAPP_SIGNAL_SECRET` | _(unset)_ | Shared secret sent with each signal (never commit it) |
+| `WHATSAPP_SIGNAL_HEADER` | `X-Whatsapp-Signal-Secret` | Header the shared secret is sent in |
 | `WHATSAPP_TRANSCRIBE_MODEL` | `base` | Whisper model used by `transcribe_voice_message` |
 | `WHATSAPP_TRANSCRIBE_DEVICE` | `auto` | Device for transcription (`cpu`, `cuda`, `auto`) |
 | `WHATSAPP_TRANSCRIBE_COMPUTE_TYPE` | `int8` | CTranslate2 compute type for transcription |

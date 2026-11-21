@@ -287,6 +287,9 @@ Copy `.env.example` to `.env` and configure as needed:
 | `WHATSAPP_BRIDGE_PORT` | `8080`                                   | Port for Go bridge REST API                  |
 | `WEBHOOK_URL`          | `http://localhost:8769/whatsapp/webhook` | Webhook for incoming messages                |
 | `FORWARD_SELF`         | `false`                                  | Forward messages sent by self                |
+| `WHATSAPP_SIGNAL_URL`  | _(unset)_                                | Receiver for metadata-only new-message signals (off unless this and the secret are set) |
+| `WHATSAPP_SIGNAL_SECRET` | _(unset)_                              | Shared secret sent with each signal          |
+| `WHATSAPP_SIGNAL_HEADER` | `X-Whatsapp-Signal-Secret`             | Header the shared secret is sent in          |
 | `WHATSAPP_TRANSCRIBE_MODEL` | `base`                              | Whisper model for `transcribe_voice_message` (`tiny`, `small`, `medium`, `large-v3`, …) |
 | `WHATSAPP_TRANSCRIBE_DEVICE` | `auto`                             | `cpu`, `cuda`, or `auto`                     |
 | `WHATSAPP_TRANSCRIBE_COMPUTE_TYPE` | `int8`                       | CTranslate2 compute type (`int8`, `float16`, …) |
