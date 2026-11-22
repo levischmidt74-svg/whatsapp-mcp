@@ -937,6 +937,43 @@ func updateChatEphemeralSettingsFromProtocolMessage(messageStore *MessageStore, 
 }
 
 // Function to send a WhatsApp message
+// parseRecipient turns what a caller passed as "recipient" into a JID: either
+// a full JID ("123@s.whatsapp.net", "123-456@g.us", "123@lid") or a bare phone
+// number.
+//
+// WhatsApp addresses a phone user by digits only. Callers routinely pass
+// numbers the way people write them ("+1 (337) 555-0100"), and a JID built
+// from that never matches the LID cache and makes WhatsApp ignore the lookup
+// for it, so the send stalls until it times out. Strip the formatting here.
+func parseRecipient(recipient string) (types.JID, error) {
+	recipient = strings.TrimSpace(recipient)
+
+	var jid types.JID
+	if strings.Contains(recipient, "@") {
+		parsed, err := types.ParseJID(recipient)
+		if err != nil {
+			return types.EmptyJID, err
+		}
+		jid = parsed
+	} else {
+		jid = types.JID{User: recipient, Server: types.DefaultUserServer}
+	}
+
+	if jid.Server == types.DefaultUserServer {
+		digits := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, jid.User)
+		if digits == "" {
+			return types.EmptyJID, fmt.Errorf("recipient %q has no digits in its phone number", recipient)
+		}
+		jid.User = digits
+	}
+	return jid, nil
+}
+
 // Limits for one send. Together they stay under the REST server's 60s write
 // timeout, so the caller always gets an answer instead of a dropped
 // connection when WhatsApp stops responding.
@@ -965,21 +1002,9 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	var settingsLookupJID types.JID
 	var err error
 
-	// Check if recipient is a JID
-	isJID := strings.Contains(recipient, "@")
-
-	if isJID {
-		// Parse the JID string
-		recipientJID, err = types.ParseJID(recipient)
-		if err != nil {
-			return false, fmt.Sprintf("Error parsing JID: %v", err)
-		}
-	} else {
-		// Create JID from phone number
-		recipientJID = types.JID{
-			User:   recipient,
-			Server: "s.whatsapp.net", // For personal chats
-		}
+	recipientJID, err = parseRecipient(recipient)
+	if err != nil {
+		return false, fmt.Sprintf("Error parsing JID: %v", err)
 	}
 	settingsLookupJID = recipientJID
 
@@ -1932,23 +1957,14 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		var recipientJID types.JID
 		var err error
 
-		// Check if recipient is a JID
-		if strings.Contains(req.Recipient, "@") {
-			recipientJID, err = types.ParseJID(req.Recipient)
-			if err != nil {
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]interface{}{
-					"success": false,
-					"message": fmt.Sprintf("Error parsing JID: %v", err),
-				})
-				return
-			}
-		} else {
-			// Create JID from phone number
-			recipientJID = types.JID{
-				User:   req.Recipient,
-				Server: "s.whatsapp.net",
-			}
+		recipientJID, err = parseRecipient(req.Recipient)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": fmt.Sprintf("Error parsing JID: %v", err),
+			})
+			return
 		}
 
 		// Determine the chat presence state
