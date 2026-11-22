@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"math"
@@ -936,6 +937,24 @@ func updateChatEphemeralSettingsFromProtocolMessage(messageStore *MessageStore, 
 }
 
 // Function to send a WhatsApp message
+// Limits for one send. Together they stay under the REST server's 60s write
+// timeout, so the caller always gets an answer instead of a dropped
+// connection when WhatsApp stops responding.
+const (
+	lidLookupTimeout = 10 * time.Second
+	sendTimeout      = 40 * time.Second
+)
+
+// describeSendError turns a SendMessage failure into the message returned to
+// the caller. A timeout is called out explicitly because the outcome is then
+// unknown: WhatsApp may have accepted the message without confirming it.
+func describeSendError(err error, timeout time.Duration) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Sprintf("WhatsApp did not confirm the send within %s. The message may or may not have been delivered; check the chat before retrying. (%v)", timeout, err)
+	}
+	return fmt.Sprintf("Error sending message: %v", err)
+}
+
 func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, recipient string, message string, mediaPath string) (bool, string) {
 	if !client.IsConnected() {
 		return false, "Not connected to WhatsApp"
@@ -974,7 +993,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	// WhatsApp is migrating to LID-based addressing; messages sent to the
 	// phone JID silently fail for migrated contacts.
 	if recipientJID.Server == types.DefaultUserServer {
-		ctx := context.Background()
+		// Bounded: a server lookup that never answers must not eat the
+		// whole request. On timeout we fall through and send to the phone JID.
+		ctx, cancelLookup := context.WithTimeout(context.Background(), lidLookupTimeout)
+		defer cancelLookup()
 		lid, lidErr := client.Store.LIDs.GetLIDForPN(ctx, recipientJID)
 		if lidErr == nil && !lid.IsEmpty() {
 			fmt.Printf("Resolved %s -> %s (LID)\n", recipientJID, lid)
@@ -1098,10 +1120,12 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 	}
 
 	// Send message
-	resp, err := client.SendMessage(context.Background(), recipientJID, msg)
+	sendCtx, cancelSend := context.WithTimeout(context.Background(), sendTimeout)
+	defer cancelSend()
+	resp, err := client.SendMessage(sendCtx, recipientJID, msg)
 
 	if err != nil {
-		return false, fmt.Sprintf("Error sending message: %v", err)
+		return false, describeSendError(err, sendTimeout)
 	}
 
 	// whatsmeow does not re-emit events.Message for messages this client
