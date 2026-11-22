@@ -142,3 +142,23 @@ class TestContactConversion:
         result = contact_to_dict(contact)
 
         assert result["name"] is None
+
+
+def test_send_message_reports_bridge_timeout(monkeypatch):
+    import requests
+
+    import whatsapp
+
+    calls = {}
+
+    def fake_post(url, json=None, timeout=None):
+        calls["timeout"] = timeout
+        raise requests.Timeout("read timed out")
+
+    monkeypatch.setattr(whatsapp.requests, "post", fake_post)
+
+    ok, message = whatsapp.send_message("123", "hello")
+
+    assert ok is False
+    assert calls["timeout"] == whatsapp.BRIDGE_SEND_TIMEOUT
+    assert "may or may not have been sent" in message

@@ -22,9 +22,19 @@ WHATSMEOW_DB_PATH = os.getenv(
 )
 WHATSAPP_API_BASE_URL = os.getenv("WHATSAPP_API_URL", "http://localhost:8080/api")
 
+# The bridge bounds a send at about 50s and its REST server drops responses
+# after 60s, so anything slower than this is never going to answer.
+BRIDGE_SEND_TIMEOUT = 75
+
 # Never print() in this module: the MCP stdio transport owns stdout, and stray
 # lines there corrupt the JSON-RPC stream. The logging module writes to stderr.
 logger = logging.getLogger(__name__)
+
+
+_SEND_TIMEOUT_MESSAGE = (
+    f"The WhatsApp bridge did not answer within {BRIDGE_SEND_TIMEOUT}s. "
+    "The message may or may not have been sent; check the chat before retrying."
+)
 
 
 @dataclass
@@ -962,7 +972,7 @@ def send_message(recipient: str, message: str) -> tuple[bool, str]:
             "message": message,
         }
 
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=BRIDGE_SEND_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -971,6 +981,8 @@ def send_message(recipient: str, message: str) -> tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.Timeout:
+        return False, _SEND_TIMEOUT_MESSAGE
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -994,7 +1006,7 @@ def send_file(recipient: str, media_path: str) -> tuple[bool, str]:
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=BRIDGE_SEND_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -1003,6 +1015,8 @@ def send_file(recipient: str, media_path: str) -> tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.Timeout:
+        return False, _SEND_TIMEOUT_MESSAGE
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
@@ -1032,7 +1046,7 @@ def send_audio_message(recipient: str, media_path: str) -> tuple[bool, str]:
         url = f"{WHATSAPP_API_BASE_URL}/send"
         payload = {"recipient": recipient, "media_path": media_path}
 
-        response = requests.post(url, json=payload)
+        response = requests.post(url, json=payload, timeout=BRIDGE_SEND_TIMEOUT)
 
         # Check if the request was successful
         if response.status_code == 200:
@@ -1041,6 +1055,8 @@ def send_audio_message(recipient: str, media_path: str) -> tuple[bool, str]:
         else:
             return False, f"Error: HTTP {response.status_code} - {response.text}"
 
+    except requests.Timeout:
+        return False, _SEND_TIMEOUT_MESSAGE
     except requests.RequestException as e:
         return False, f"Request error: {str(e)}"
     except json.JSONDecodeError:
